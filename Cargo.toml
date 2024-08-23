@@ -4,3 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+toml_edit = "0.22.20"
+anyhow = "1.0.86"
+clap = { version = "4.5.16", features = ["derive"] }
+fs4 = { version = "0.9.1", features = ["tokio"] }
+tokio = { version = "1.39.3", features = ["fs", "macros", "rt", "io-util"] }
+mlua = { version = "0.9.9", features = ["lua54", "vendored"] }
+tokio-util = "0.7.11"
+futures = "0.3.30"

@@ -1,10 +1,10 @@
-use std::fmt::Display;
-use anyhow::anyhow;
-use clap::{Args, Subcommand};
-use toml_edit::value;
-use toml_edit::{DocumentMut, Table};
 use crate::Result;
 use crate::Types;
+use anyhow::anyhow;
+use clap::{Args, Subcommand};
+use std::fmt::Display;
+use toml_edit::value;
+use toml_edit::{DocumentMut, Table};
 
 /// Struct containing arguments used to reference a document
 #[derive(Default, Args, Debug, Clone)]
@@ -39,22 +39,20 @@ pub struct TableArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum TableAction {
-    #[clap(skip)]
-    TableCreated,
     /// Inserts a value for a key to a table
     Insert(TableArgs),
     /// Replaces the value of a key from a table
     Replace(TableArgs),
     /// Removes a key from a table
     Remove(TableArgs),
-    #[clap(skip)]
-    WouldRemove,
-    #[clap(skip)]
-    WouldReplace,
     /// Views the value of a key from a table
     View(TableArgs),
     /// Checks if a key exists in a table
     Exists(TableArgs),
+    #[clap(skip)]
+    WouldRemove,
+    #[clap(skip)]
+    WouldReplace,
     #[clap(skip)]
     RejectTypeMismatch,
     #[clap(skip)]
@@ -126,9 +124,7 @@ impl TableArgs {
                 value,
                 ..
             } => {
-                let item = value
-                    .as_ref()
-                    .unwrap_or(&toml_edit::Item::None);
+                let item = value.as_ref().unwrap_or(&toml_edit::Item::None);
                 self.get_entry(doc).map(|e| {
                     if value_type.is_type(e) {
                         if item.is_none() {
@@ -162,9 +158,7 @@ impl TableArgs {
                 value_type,
                 ..
             } => {
-                let item = value
-                    .as_ref()
-                    .unwrap_or(&toml_edit::Item::None);
+                let item = value.as_ref().unwrap_or(&toml_edit::Item::None);
                 Some(
                     self.get_entry(doc)
                         .map(|e| {
@@ -198,11 +192,8 @@ impl TableArgs {
     /// - Returns an error if the requested table was unable to be created
     /// - Returns an error if the table entry was occupied, and the existing value did not match the expected type
     pub fn set_item(&self, doc: &mut DocumentMut) -> Result<Option<toml_edit::Item>> {
-        if let Some(item) = self
-            .value
-            .as_ref()
-            .cloned()
-           // .map(|v| self.value_type.transmute_item(v.clone()))
+        if let Some(item) = self.value.as_ref().cloned()
+        // .map(|v| self.value_type.transmute_item(v.clone()))
         {
             let table = self.get_table_mut(doc)?;
             match table.entry(&self.key) {
@@ -232,11 +223,8 @@ impl TableArgs {
     }
 
     pub fn remove_item(&self, doc: &mut DocumentMut) -> Result<Option<toml_edit::Item>> {
-        if let Some(item) = self
-            .value
-            .as_ref()
-            .cloned()
-            // .map(|v| self.value_type.transmute_item(v.clone()))
+        if let Some(item) = self.value.as_ref().cloned()
+        // .map(|v| self.value_type.transmute_item(v.clone()))
         {
             let table = self.get_table_mut(doc)?;
             let can_remove = match table.entry(&self.key) {
@@ -289,10 +277,7 @@ impl TableArgs {
         let mut action = self.action(&doc);
 
         if let Some(TableAction::RejectMissingTable) = action {
-            // TODO -- Log that a table was created
-            {
-                self.get_table_mut(doc)?;
-            }
+            self.get_table_mut(doc)?;
             action = self.action(&doc);
         }
 
@@ -320,10 +305,9 @@ impl TableArgs {
 
     /// Sets the key/value/value_ty settings
     #[inline]
-    pub fn set_kvp(&mut self, key: &str, value: impl KeyValueType) -> Result<()> {
+    pub fn set_kvp(&mut self, key: &str, value: impl KeyValueType) {
         self.set_key(key);
-        value.configure_args(self)?;
-        Ok(())
+        value.configure_args(self);
     }
 
     /// Sets the current table
@@ -346,11 +330,10 @@ impl TableArgs {
         self.key = key.to_string();
     }
 
-    /// Sets the current value
+    /// Sets the current value as item
     #[inline]
-    pub fn set_value(&mut self, value: &str) -> Result<()> {
-        self.value = Some(toml_edit::value(value));
-        Ok(())
+    pub fn set_value(&mut self, item: toml_edit::Item) {
+        self.value = Some(item);
     }
 
     /// Sets the value of the modify flag
@@ -363,6 +346,35 @@ impl TableArgs {
     #[inline]
     pub fn set_remove(&mut self, remove: bool) {
         self.remove = remove;
+    }
+}
+
+impl Display for TableAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TableAction::Insert(args) => {
+                write!(f, "insert {args}")
+            }
+            TableAction::Replace(args) => {
+                write!(f, "replace {args}")
+            }
+            TableAction::Remove(args) => {
+                write!(f, "remove {args}")
+            }
+            TableAction::View(args) => {
+                write!(f, "view {args}")
+            }
+            TableAction::Exists(args) => {
+                write!(f, "exists {args}")
+            }
+            _ => Ok(()), // TableAction::TableCreated => todo!(),
+                         // TableAction::WouldRemove => todo!(),
+                         // TableAction::WouldReplace => todo!(),
+                         // TableAction::RejectTypeMismatch => todo!(),
+                         // TableAction::RejectExistingValueMismatch => todo!(),
+                         // TableAction::RejectMissingTable => todo!(),
+                         // TableAction::NoOP => todo!(),
+        }
     }
 }
 
@@ -388,7 +400,10 @@ impl Display for TableArgs {
 }
 
 pub trait KeyValueType {
-    fn configure_args(&self, args: &mut TableArgs) -> Result<()>;
+    fn configure_args(&self, args: &mut TableArgs) {
+        args.set_value(self.to_toml_item());
+        args.set_value_ty(Self::db_type());
+    }
 
     fn db_type() -> Types;
 
@@ -398,44 +413,26 @@ pub trait KeyValueType {
 }
 
 impl KeyValueType for String {
-    fn configure_args(&self, args: &mut TableArgs) -> Result<()> {
-        args.set_value(format!("'{self}'").as_str())?;
-        args.set_value_ty(Types::String);
-        Ok(())
-    }
-
     fn to_toml_item(&self) -> toml_edit::Item {
         value(self)
     }
-    
+
     fn db_type() -> Types {
         Types::String
     }
 }
 
 impl<'a> KeyValueType for &'a str {
-    fn configure_args(&self, args: &mut TableArgs) -> Result<()> {
-        args.set_value(format!("'{self}'").as_str())?;
-        args.set_value_ty(Types::String);
-        Ok(())
-    }
-
     fn to_toml_item(&self) -> toml_edit::Item {
         value(*self)
     }
-    
+
     fn db_type() -> Types {
         Types::String
     }
 }
 
 impl KeyValueType for f64 {
-    fn configure_args(&self, args: &mut TableArgs) -> Result<()> {
-        args.set_value(format!("{self}").as_str())?;
-        args.set_value_ty(Types::Float);
-        Ok(())
-    }
-    
     fn to_toml_item(&self) -> toml_edit::Item {
         value(*self)
     }
@@ -446,12 +443,6 @@ impl KeyValueType for f64 {
 }
 
 impl KeyValueType for f32 {
-    fn configure_args(&self, args: &mut TableArgs) -> Result<()> {
-        args.set_value(format!("{self}").as_str())?;
-        args.set_value_ty(Types::Float);
-        Ok(())
-    }
-    
     fn to_toml_item(&self) -> toml_edit::Item {
         value(*self as f64)
     }
@@ -462,28 +453,16 @@ impl KeyValueType for f32 {
 }
 
 impl KeyValueType for usize {
-    fn configure_args(&self, args: &mut TableArgs) -> Result<()> {
-        args.set_value(format!("{self}").as_str())?;
-        args.set_value_ty(Types::Integer);
-        Ok(())
-    }
-    
     fn to_toml_item(&self) -> toml_edit::Item {
         value(*self as i64)
     }
-    
+
     fn db_type() -> Types {
         Types::Integer
     }
 }
 
 impl KeyValueType for u64 {
-    fn configure_args(&self, args: &mut TableArgs) -> Result<()> {
-        args.set_value(format!("{self}").as_str())?;
-        args.set_value_ty(Types::Integer);
-        Ok(())
-    }
-    
     fn to_toml_item(&self) -> toml_edit::Item {
         value(*self as i64)
     }
@@ -493,19 +472,44 @@ impl KeyValueType for u64 {
     }
 }
 
-
 impl<'a> KeyValueType for u32 {
-    fn configure_args(&self, args: &mut TableArgs) -> Result<()> {
-        args.set_value(format!("{self}").as_str())?;
-        args.set_value_ty(Types::Integer);
-        Ok(())
-    }
-    
     fn to_toml_item(&self) -> toml_edit::Item {
         value(*self as i64)
     }
 
     fn db_type() -> Types {
         Types::Integer
+    }
+}
+
+#[allow(unused_imports)]
+mod tests {
+    use std::str::FromStr;
+    use crate::split_cmd;
+
+    use super::TableAction;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Test {
+        #[clap(subcommand)]
+        command: TableAction,
+    }
+
+    #[test]
+    fn test_cli_args() {
+        let args = split_cmd("test insert --table 'test' key -- \'value\'").unwrap();
+        let command = Test::parse_from(args);
+
+        assert!(
+            matches!(command.command, TableAction::Insert(..))
+        );
+        if let TableAction::Insert(args) = command.command {
+            assert!(!args.remove);
+            assert!(!args.modify);
+            assert_eq!("test", args.table.as_str());
+            assert_eq!("key", args.key.as_str());
+            assert_eq!("value", args.value.unwrap().as_str().unwrap());
+        }
     }
 }

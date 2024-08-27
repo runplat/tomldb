@@ -2,7 +2,7 @@ use clap::Parser;
 use tomldb::TableAction;
 
 fn main() {
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(tomldb::split_cmd("tomldb-journal insert key -- 'value'").unwrap());
 
     println!("{:#?}", cli.action);
 }

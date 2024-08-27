@@ -70,10 +70,18 @@ impl Journal {
         self.pending.iter()
     }
 
+    pub fn table(&mut self, table: &str) -> &mut TableArgs {
+        self.push_change({
+            let mut args = TableArgs::default();
+            args.set_table(table);
+            args
+        });
+        self.pending.last_mut().expect("should exist just added")
+    }
+
     /// Pushes a change
-    pub fn push_change(&mut self, args: TableArgs) -> Result<()> {
+    pub fn push_change(&mut self, args: TableArgs) {
         self.pending.push(args);
-        Ok(())
     }
 
     /// Evaluates the current table args
@@ -81,7 +89,6 @@ impl Journal {
         for args in self.pending.drain(..) {
             match args.eval(&mut self.doc) {
                 Ok(action) => {
-                    eprintln!("Evaluated: {action:?}");
                     self.evaluated.push((action, args));
                 }
                 Err(err) => {
@@ -100,8 +107,8 @@ impl Journal {
         match &mut tx {
             // In this state, the commit must be guranteed since a lock has already been acquired on all data
             Transaction::Commit { journal, data } => {
-                for (a, args) in self.evaluated {
-                    journal.write(format!("{a:?}: {args}\n").as_bytes()).await?;
+                for (a, _) in self.evaluated {
+                    journal.write(format!("{a}\n").as_bytes()).await?;
                 }
                 data.write_all(self.doc.to_string().as_bytes()).await?;
                 Ok(())
@@ -272,28 +279,11 @@ async fn test_empty_db() {
     let (tx, mut journal) = tx.write(&db).await.unwrap();
     let tx = tx.commit(&db).await.unwrap();
     {
-        let mut args = TableArgs::default();
-        args.set_table("test");
-        args.set_kvp("value-2", 3.14f32).unwrap();
-        println!("{args}");
-        journal.push_change(args).unwrap();
-    }
-    {
-        let mut args = TableArgs::default();
-        args.set_table("test");
-        args.set_kvp("value", "hello world").unwrap();
-        println!("{args}");
-        journal.push_change(args).unwrap();
-    }
-    {
-        let mut args = TableArgs::default();
-        args.set_table("test");
-        args.set_value_ty(crate::Types::String);
-        args.set_key("value");
-        args.set_remove(true);
-        args.set_value("'hello world'").unwrap();
-        println!("{args}");
-        journal.push_change(args).unwrap();
+        journal.table("test").set_kvp("value-2", 3.14f32);
+        journal.table("test").set_kvp("value", "hello world");
+        let to_remove = journal.table("test");
+        to_remove.set_kvp("value", "hello world");
+        to_remove.set_remove(true);
     }
     journal.evaluate_args();
     journal.commit(tx).await.unwrap();

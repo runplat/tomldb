@@ -14,7 +14,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use toml_edit::{DocumentMut, Item};
 
-use crate::{Result, TableArgs};
+use crate::{args::TableAction, Result, TableArgs};
 
 /// Struct containing database settings and file paths
 pub struct Database {
@@ -61,7 +61,7 @@ pub struct Journal {
     /// Current args
     pending: Vec<TableArgs>,
     /// Evaluated
-    evaluated: Vec<TableArgs>,
+    evaluated: Vec<(TableAction, TableArgs)>,
 }
 
 impl Journal {
@@ -82,6 +82,7 @@ impl Journal {
             match args.eval(&mut self.doc) {
                 Ok(action) => {
                     eprintln!("Evaluated: {action:?}");
+                    self.evaluated.push((action, args));
                 }
                 Err(err) => {
                     eprintln!("Error {err:?}");
@@ -99,6 +100,9 @@ impl Journal {
         match &mut tx {
             // In this state, the commit must be guranteed since a lock has already been acquired on all data
             Transaction::Commit { journal, data } => {
+                for (a, args) in self.evaluated {
+                    journal.write(format!("{a:?}: {args}\n").as_bytes()).await?;
+                }
                 data.write_all(self.doc.to_string().as_bytes()).await?;
                 Ok(())
             }
@@ -270,27 +274,14 @@ async fn test_empty_db() {
     {
         let mut args = TableArgs::default();
         args.set_table("test");
-        args.set_value_ty(crate::Types::Float);
-        args.set_key("value-2");
-        args.set_value("3.14").unwrap();
+        args.set_kvp("value-2", 3.14f32).unwrap();
         println!("{args}");
         journal.push_change(args).unwrap();
     }
     {
         let mut args = TableArgs::default();
         args.set_table("test");
-        args.set_value_ty(crate::Types::String);
-        args.set_key("value");
-        args.set_value("'hello world'").unwrap();
-        println!("{args}");
-        journal.push_change(args).unwrap();
-    }
-    {
-        let mut args = TableArgs::default();
-        args.set_table("test");
-        args.set_value_ty(crate::Types::String);
-        args.set_key("value");
-        args.set_value("'hello world'").unwrap();
+        args.set_kvp("value", "hello world").unwrap();
         println!("{args}");
         journal.push_change(args).unwrap();
     }

@@ -1,11 +1,10 @@
 use std::fmt::Display;
-use std::str::FromStr;
-
+use anyhow::anyhow;
+use clap::{Args, Subcommand};
+use toml_edit::value;
+use toml_edit::{DocumentMut, Table};
 use crate::Result;
 use crate::Types;
-use anyhow::anyhow;
-use clap::clap_derive::*;
-use toml_edit::{DocumentMut, Table};
 
 /// Struct containing arguments used to reference a document
 #[derive(Default, Args, Debug, Clone)]
@@ -35,22 +34,34 @@ pub struct TableArgs {
     /// Value for the config
     ///
     /// Restrictions: MUST be a valid TOML table value
-    value: Option<toml_edit::Value>,
+    value: Option<toml_edit::Item>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum TableAction {
+    #[clap(skip)]
     TableCreated,
-    Remove,
+    /// Inserts a value for a key to a table
+    Insert(TableArgs),
+    /// Replaces the value of a key from a table
+    Replace(TableArgs),
+    /// Removes a key from a table
+    Remove(TableArgs),
+    #[clap(skip)]
     WouldRemove,
-    Replace,
+    #[clap(skip)]
     WouldReplace,
-    Insert,
-    View,
-    Exists,
+    /// Views the value of a key from a table
+    View(TableArgs),
+    /// Checks if a key exists in a table
+    Exists(TableArgs),
+    #[clap(skip)]
     RejectTypeMismatch,
+    #[clap(skip)]
     RejectExistingValueMismatch,
+    #[clap(skip)]
     RejectMissingTable,
+    #[clap(skip)]
     NoOP,
 }
 
@@ -89,6 +100,7 @@ impl TableArgs {
     }
 
     /// Returns the action the current set of args would take on the document
+    #[inline]
     pub fn action(&self, doc: &DocumentMut) -> Option<TableAction> {
         if !self.has_table(doc) {
             return Some(TableAction::RejectMissingTable);
@@ -102,7 +114,7 @@ impl TableArgs {
                 ..
             } => self.get_entry(doc).map(|e| {
                 if value_type.is_type(e) {
-                    TableAction::Replace
+                    TableAction::Replace(self.clone())
                 } else {
                     TableAction::RejectTypeMismatch
                 }
@@ -116,14 +128,13 @@ impl TableArgs {
             } => {
                 let item = value
                     .as_ref()
-                    .map(|v| toml_edit::value(v))
-                    .unwrap_or(toml_edit::Item::None);
+                    .unwrap_or(&toml_edit::Item::None);
                 self.get_entry(doc).map(|e| {
                     if value_type.is_type(e) {
                         if item.is_none() {
-                            TableAction::View
+                            TableAction::View(self.clone())
                         } else if item.to_string() == e.to_string() {
-                            TableAction::Replace
+                            TableAction::Replace(self.clone())
                         } else {
                             TableAction::RejectExistingValueMismatch
                         }
@@ -153,8 +164,7 @@ impl TableArgs {
             } => {
                 let item = value
                     .as_ref()
-                    .map(|v| toml_edit::value(v))
-                    .unwrap_or(toml_edit::Item::None);
+                    .unwrap_or(&toml_edit::Item::None);
                 Some(
                     self.get_entry(doc)
                         .map(|e| {
@@ -162,7 +172,7 @@ impl TableArgs {
                                 if item.is_none() {
                                     TableAction::NoOP
                                 } else if item.to_string() == e.to_string() {
-                                    TableAction::Exists
+                                    TableAction::Exists(self.clone())
                                 } else {
                                     TableAction::RejectExistingValueMismatch
                                 }
@@ -170,7 +180,7 @@ impl TableArgs {
                                 TableAction::RejectTypeMismatch
                             }
                         })
-                        .unwrap_or(TableAction::Insert),
+                        .unwrap_or(TableAction::Insert(self.clone())),
                 )
             }
         }
@@ -188,10 +198,11 @@ impl TableArgs {
     /// - Returns an error if the requested table was unable to be created
     /// - Returns an error if the table entry was occupied, and the existing value did not match the expected type
     pub fn set_item(&self, doc: &mut DocumentMut) -> Result<Option<toml_edit::Item>> {
-        if let Some(Ok(item)) = self
+        if let Some(item) = self
             .value
             .as_ref()
-            .map(|v| self.value_type.transmute_item(v.clone()))
+            .cloned()
+           // .map(|v| self.value_type.transmute_item(v.clone()))
         {
             let table = self.get_table_mut(doc)?;
             match table.entry(&self.key) {
@@ -221,10 +232,11 @@ impl TableArgs {
     }
 
     pub fn remove_item(&self, doc: &mut DocumentMut) -> Result<Option<toml_edit::Item>> {
-        if let Some(Ok(item)) = self
+        if let Some(item) = self
             .value
             .as_ref()
-            .map(|v| self.value_type.transmute_item(v.clone()))
+            .cloned()
+            // .map(|v| self.value_type.transmute_item(v.clone()))
         {
             let table = self.get_table_mut(doc)?;
             let can_remove = match table.entry(&self.key) {
@@ -257,7 +269,7 @@ impl TableArgs {
         let table = self.get_table(doc)?;
         table.get(&self.key).and_then(|t| {
             if self.value_type.is_type(t) {
-                if let Some(value) = self.value.as_ref().map(|v| toml_edit::value(v)) {
+                if let Some(value) = self.value.as_ref() {
                     if value.to_string() == t.to_string() {
                         Some(t)
                     } else {
@@ -286,24 +298,32 @@ impl TableArgs {
 
         if let Some(action) = action {
             match action {
-                TableAction::Remove => {
+                TableAction::Remove(..) => {
                     self.remove_item(doc)?;
                 }
-                TableAction::Replace | TableAction::Insert => {
+                TableAction::Replace(..) | TableAction::Insert(..) => {
                     self.set_item(doc)?;
                 }
-                TableAction::View => {
+                TableAction::View(..) => {
                     if let Some(entry) = self.get_entry(doc) {
                         println!("{}", entry.to_string());
                     }
                 }
-                TableAction::Exists => {}
+                TableAction::Exists(..) => {}
                 _ => {}
             }
             Ok(action)
         } else {
             Err(anyhow!("Could not evaluate table action from arguments"))
         }
+    }
+
+    /// Sets the key/value/value_ty settings
+    #[inline]
+    pub fn set_kvp(&mut self, key: &str, value: impl KeyValueType) -> Result<()> {
+        self.set_key(key);
+        value.configure_args(self)?;
+        Ok(())
     }
 
     /// Sets the current table
@@ -329,7 +349,7 @@ impl TableArgs {
     /// Sets the current value
     #[inline]
     pub fn set_value(&mut self, value: &str) -> Result<()> {
-        self.value = Some(toml_edit::Value::from_str(value)?);
+        self.value = Some(toml_edit::value(value));
         Ok(())
     }
 
@@ -364,5 +384,128 @@ impl Display for TableArgs {
             write!(f, " -- {value}")?;
         }
         Ok(())
+    }
+}
+
+pub trait KeyValueType {
+    fn configure_args(&self, args: &mut TableArgs) -> Result<()>;
+
+    fn db_type() -> Types;
+
+    fn to_toml_item(&self) -> toml_edit::Item {
+        toml_edit::Item::None
+    }
+}
+
+impl KeyValueType for String {
+    fn configure_args(&self, args: &mut TableArgs) -> Result<()> {
+        args.set_value(format!("'{self}'").as_str())?;
+        args.set_value_ty(Types::String);
+        Ok(())
+    }
+
+    fn to_toml_item(&self) -> toml_edit::Item {
+        value(self)
+    }
+    
+    fn db_type() -> Types {
+        Types::String
+    }
+}
+
+impl<'a> KeyValueType for &'a str {
+    fn configure_args(&self, args: &mut TableArgs) -> Result<()> {
+        args.set_value(format!("'{self}'").as_str())?;
+        args.set_value_ty(Types::String);
+        Ok(())
+    }
+
+    fn to_toml_item(&self) -> toml_edit::Item {
+        value(*self)
+    }
+    
+    fn db_type() -> Types {
+        Types::String
+    }
+}
+
+impl KeyValueType for f64 {
+    fn configure_args(&self, args: &mut TableArgs) -> Result<()> {
+        args.set_value(format!("{self}").as_str())?;
+        args.set_value_ty(Types::Float);
+        Ok(())
+    }
+    
+    fn to_toml_item(&self) -> toml_edit::Item {
+        value(*self)
+    }
+
+    fn db_type() -> Types {
+        Types::Float
+    }
+}
+
+impl KeyValueType for f32 {
+    fn configure_args(&self, args: &mut TableArgs) -> Result<()> {
+        args.set_value(format!("{self}").as_str())?;
+        args.set_value_ty(Types::Float);
+        Ok(())
+    }
+    
+    fn to_toml_item(&self) -> toml_edit::Item {
+        value(*self as f64)
+    }
+
+    fn db_type() -> Types {
+        Types::Float
+    }
+}
+
+impl KeyValueType for usize {
+    fn configure_args(&self, args: &mut TableArgs) -> Result<()> {
+        args.set_value(format!("{self}").as_str())?;
+        args.set_value_ty(Types::Integer);
+        Ok(())
+    }
+    
+    fn to_toml_item(&self) -> toml_edit::Item {
+        value(*self as i64)
+    }
+    
+    fn db_type() -> Types {
+        Types::Integer
+    }
+}
+
+impl KeyValueType for u64 {
+    fn configure_args(&self, args: &mut TableArgs) -> Result<()> {
+        args.set_value(format!("{self}").as_str())?;
+        args.set_value_ty(Types::Integer);
+        Ok(())
+    }
+    
+    fn to_toml_item(&self) -> toml_edit::Item {
+        value(*self as i64)
+    }
+
+    fn db_type() -> Types {
+        Types::Integer
+    }
+}
+
+
+impl<'a> KeyValueType for u32 {
+    fn configure_args(&self, args: &mut TableArgs) -> Result<()> {
+        args.set_value(format!("{self}").as_str())?;
+        args.set_value_ty(Types::Integer);
+        Ok(())
+    }
+    
+    fn to_toml_item(&self) -> toml_edit::Item {
+        value(*self as i64)
+    }
+
+    fn db_type() -> Types {
+        Types::Integer
     }
 }

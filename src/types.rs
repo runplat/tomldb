@@ -1,7 +1,5 @@
-use std::{fmt::Display, str::FromStr};
-
+use std::fmt::Display;
 use clap::clap_derive::*;
-use crate::Result;
 
 /// Enum containing variants of supported TOML value types
 #[derive(Default, Copy, Clone, Debug, ValueEnum)]
@@ -21,7 +19,16 @@ pub enum Types {
     Integer,
     /// Parses the value as a valid TOML inline table
     #[clap(name = "obj")]
-    InlineTable,
+    Object,
+    /// Parses the value as valid TOML and appends to an existing value
+    /// 
+    /// If used as the main value type (`-X`) will assume the item is a string
+    #[clap(name = "append")]
+    Append,
+    /// Parses the value as valid TOML string and interprets the string
+    /// as a path to import a TOML document from
+    #[clap(name = "import")]
+    Import,
 }
 
 impl Types {
@@ -32,49 +39,10 @@ impl Types {
             Types::Bool => value.as_bool().is_some(),
             Types::Float => value.as_float().is_some(),
             Types::Integer => value.as_integer().is_some(),
-            Types::InlineTable => value.as_inline_table().is_some(),
+            Types::Object => value.as_inline_table().is_some(),
+            Types::Append => value.as_array().is_some(),
+            Types::Import => value.as_table().is_some(),
         }
-    }
-
-    /// Transmutes a toml_edit::Value into a toml_edit::Item
-    pub fn transmute_item(&self, value: toml_edit::Value) -> Result<toml_edit::Item> {
-        // Parse the value **ONLY** after unlocking the locked file in case there is a parse error
-        let item = match self {
-            Types::String => toml_edit::value(value),
-            Types::Bool => {
-                toml_edit::value(value.as_bool().expect("should be a valid bool value"))
-            }
-            Types::Float => {
-                toml_edit::value(value.as_float().expect("should be a valid float value"))
-            }
-            Types::Integer => {
-                toml_edit::value(value.as_integer().expect("should be a valid float value"))
-            }
-            Types::InlineTable => {
-                let value = value.to_string().replace(r#"\""#, "\"");
-                let value = value.trim_matches(['\'']);
-                let intermediate = format!(
-                    r"
-            val = {value}
-            "
-                );
-                let doc = toml_edit::ImDocument::from_str(intermediate.as_str())?;
-                toml_edit::value(
-                    doc["val"]
-                        .as_inline_table()
-                        .cloned()
-                        .expect("should be valid inline table"),
-                )
-            }
-        };
-
-        Ok(item)
-    }
-
-    /// Parses an item from an input str
-    pub fn parse_item(&self, input: &str) -> Result<toml_edit::Item> {
-        let value = toml_edit::Value::from_str(input)?;
-        self.transmute_item(value)
     }
 }
 
@@ -93,9 +61,13 @@ impl Display for Types {
             Types::Integer => {
                 write!(f, "int")
             },
-            Types::InlineTable => {
+            Types::Object => {
                 write!(f, "obj")
             },
+            Types::Append => {
+                write!(f, "append")
+            },
+            Types::Import => write!(f, "import"),
         }
     }
 }

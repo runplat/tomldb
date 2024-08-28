@@ -3,6 +3,7 @@ use crate::Types;
 use anyhow::anyhow;
 use clap::{Args, Subcommand};
 use std::fmt::Display;
+use std::path::PathBuf;
 use toml_edit::value;
 use toml_edit::{DocumentMut, Table};
 
@@ -25,8 +26,15 @@ pub struct TableArgs {
     /// Item type to write into config
     ///
     /// Default to `string`
-    #[clap(short = 'x', long, value_enum, default_value = "str")]
+    #[clap(short = 'X', long, value_enum, default_value = "str")]
     value_type: Types,
+    /// Extended item type to write to config
+    ///
+    /// Allows for complex expressions such as,
+    ///
+    /// `-X str -Y append`
+    #[clap(short = 'Y', long, value_enum)]
+    extended_value_type: Option<Types>,
     /// Config key name
     ///
     /// Restrictions: MUST be a valid TOML table key
@@ -35,8 +43,12 @@ pub struct TableArgs {
     ///
     /// Restrictions: MUST be a valid TOML table value
     value: Option<toml_edit::Item>,
+    /// Import path that was set when value_type was -X import
+    #[clap(skip)]
+    import_path: Option<PathBuf>,
 }
 
+/// Enumeration of table actions that can be evaluated by table-args
 #[derive(Subcommand, Debug, Clone)]
 pub enum TableAction {
     /// Inserts a value for a key to a table
@@ -49,59 +61,32 @@ pub enum TableAction {
     View(TableArgs),
     /// Checks if a key exists in a table
     Exists(TableArgs),
+    /// Indicates that the remove would have been successful
     #[clap(skip)]
     WouldRemove,
+    /// Indicates that the replace would have been successful
     #[clap(skip)]
     WouldReplace,
+    /// Indicates the action would have rejected due to a value type mismatch
     #[clap(skip)]
     RejectTypeMismatch,
+    /// Indicates the action would have been rejected due to an existing value not matching the expected value
     #[clap(skip)]
     RejectExistingValueMismatch,
+    /// (internal) Indicates the action would have been rejected because the corresponding table is missing
     #[clap(skip)]
-    RejectMissingTable,
+    InternalRejectMissingTable,
+    /// Indicates no action would have been evaluated
     #[clap(skip)]
     NoOP,
 }
 
 impl TableArgs {
-    /// Returns a mutable reference to the table specified by this configuration
-    #[inline]
-    pub fn get_table_mut<'a: 'b, 'b>(&self, doc: &'a mut DocumentMut) -> Result<&'b mut Table> {
-        self.table
-            .as_str()
-            .split('.')
-            .fold(Ok(doc.as_table_mut()), |t, k| {
-                let t = t?;
-                if !t.contains_table(k) && !t.contains_key(k) {
-                    t[k] = toml_edit::table();
-                    Ok(t[k].as_table_mut().expect("should exist just added"))
-                } else if t.contains_table(k) {
-                    Ok(t[k].as_table_mut().expect("should exist just checked"))
-                } else {
-                    Err(anyhow!("Could not create table"))
-                }
-            })
-    }
-
-    /// Get a reference to the table specified by this configuration
-    #[inline]
-    pub fn get_table<'a: 'b, 'b>(&self, doc: &'a DocumentMut) -> Option<&'b Table> {
-        self.table
-            .split(['.'])
-            .try_fold(doc.as_table(), |t, k| t.get(k).and_then(|v| v.as_table()))
-    }
-
-    /// Returns true if the document has the table specified by this configuration
-    #[inline]
-    pub fn has_table<'a: 'b, 'b>(&self, doc: &DocumentMut) -> bool {
-        self.get_table(doc).is_some()
-    }
-
-    /// Returns the action the current set of args would take on the document
+    /// Returns the action the current set of args would apply to a document
     #[inline]
     pub fn action(&self, doc: &DocumentMut) -> Option<TableAction> {
         if !self.has_table(doc) {
-            return Some(TableAction::RejectMissingTable);
+            return Some(TableAction::InternalRejectMissingTable);
         }
 
         match self {
@@ -180,6 +165,70 @@ impl TableArgs {
         }
     }
 
+    /// Evaluates the current action w/ this
+    pub fn eval(&self, doc: &mut DocumentMut) -> Result<TableAction> {
+        let mut action = self.action(&doc);
+
+        if let Some(TableAction::InternalRejectMissingTable) = action {
+            self.get_table_mut(doc)?;
+            action = self.action(&doc);
+        }
+
+        if let Some(action) = action {
+            match action {
+                TableAction::Remove(..) => {
+                    self.remove_item(doc)?;
+                }
+                TableAction::Replace(..) | TableAction::Insert(..) => {
+                    self.set_item(doc)?;
+                }
+                TableAction::View(..) => {
+                    if let Some(entry) = self.get_entry(doc) {
+                        println!("{}", entry.to_string());
+                    }
+                }
+                TableAction::Exists(..) => {}
+                _ => {}
+            }
+            Ok(action)
+        } else {
+            Err(anyhow!("Could not evaluate table action from arguments"))
+        }
+    }
+    /// Returns a mutable reference to the table specified by this configuration
+    #[inline]
+    pub fn get_table_mut<'a: 'b, 'b>(&self, doc: &'a mut DocumentMut) -> Result<&'b mut Table> {
+        self.table
+            .as_str()
+            .split('.')
+            .fold(Ok(doc.as_table_mut()), |t, k| {
+                let t = t?;
+                if !t.contains_table(k) && !t.contains_key(k) {
+                    t[k] = toml_edit::table();
+                    Ok(t[k].as_table_mut().expect("should exist just added"))
+                } else if t.contains_table(k) {
+                    Ok(t[k].as_table_mut().expect("should exist just checked"))
+                } else {
+                    Err(anyhow!("Could not create table"))
+                }
+            })
+    }
+
+    /// Get a reference to the table specified by this configuration
+    #[inline]
+    pub fn get_table<'a: 'b, 'b>(&self, doc: &'a DocumentMut) -> Option<&'b Table> {
+        self.table
+            .split(['.'])
+            .try_fold(doc.as_table(), |t, k| t.get(k).and_then(|v| v.as_table()))
+    }
+
+    /// Returns true if the document has the table specified by this configuration
+    #[inline]
+    pub fn has_table<'a: 'b, 'b>(&self, doc: &DocumentMut) -> bool {
+        self.get_table(doc).is_some()
+    }
+
+    /// Fetches an entry from the document
     pub fn get_entry<'a: 'b, 'b>(&self, doc: &'a DocumentMut) -> Option<&'b toml_edit::Item> {
         self.get_table(doc)?.get(&self.key)
     }
@@ -203,7 +252,9 @@ impl TableArgs {
                         Types::Bool => occupied.get().is_bool(),
                         Types::Float => occupied.get().is_float(),
                         Types::Integer => occupied.get().is_integer(),
-                        Types::InlineTable => occupied.get().is_inline_table(),
+                        Types::Object => occupied.get().is_inline_table(),
+                        Types::Append => occupied.get().is_array(),
+                        Types::Import => occupied.get().is_table(),
                     };
                     if is_expected_ty {
                         let replaced = occupied.insert(item);
@@ -222,6 +273,7 @@ impl TableArgs {
         }
     }
 
+    /// Removes an item from a document
     pub fn remove_item(&self, doc: &mut DocumentMut) -> Result<Option<toml_edit::Item>> {
         if let Some(item) = self.value.as_ref().cloned()
         // .map(|v| self.value_type.transmute_item(v.clone()))
@@ -234,7 +286,9 @@ impl TableArgs {
                         Types::Bool => occupied.get().is_bool(),
                         Types::Float => occupied.get().is_float(),
                         Types::Integer => occupied.get().is_integer(),
-                        Types::InlineTable => occupied.get().is_inline_table(),
+                        Types::Object => occupied.get().is_inline_table(),
+                        Types::Append => occupied.get().is_array(),
+                        Types::Import => occupied.get().is_table(),
                     };
                     is_expected_ty && occupied.get().to_string() == item.to_string()
                 }
@@ -272,42 +326,13 @@ impl TableArgs {
         })
     }
 
-    /// Evaluates the current action w/ this
-    pub fn eval(&self, doc: &mut DocumentMut) -> Result<TableAction> {
-        let mut action = self.action(&doc);
-
-        if let Some(TableAction::RejectMissingTable) = action {
-            self.get_table_mut(doc)?;
-            action = self.action(&doc);
-        }
-
-        if let Some(action) = action {
-            match action {
-                TableAction::Remove(..) => {
-                    self.remove_item(doc)?;
-                }
-                TableAction::Replace(..) | TableAction::Insert(..) => {
-                    self.set_item(doc)?;
-                }
-                TableAction::View(..) => {
-                    if let Some(entry) = self.get_entry(doc) {
-                        println!("{}", entry.to_string());
-                    }
-                }
-                TableAction::Exists(..) => {}
-                _ => {}
-            }
-            Ok(action)
-        } else {
-            Err(anyhow!("Could not evaluate table action from arguments"))
-        }
-    }
-
     /// Sets the key/value/value_ty settings
     #[inline]
-    pub fn set_kvp(&mut self, key: &str, value: impl KeyValueType) {
+    pub fn set_kvp<KVP: KeyValueType>(&mut self, key: &str, value: KVP) {
         self.set_key(key);
         value.configure_args(self);
+
+        if matches!(value.db_type(), Types::Import) {}
     }
 
     /// Sets the current table
@@ -389,12 +414,23 @@ impl Display for TableArgs {
         }
 
         write!(f, "-t '{}' ", self.table)?;
-        write!(f, "-x {} ", self.value_type)?;
+        write!(f, "-X {} ", self.value_type)?;
+        if let Some(y) = self.extended_value_type {
+            write!(f, "-Y {y} ")?;
+        }
         write!(f, "'{}'", self.key)?;
 
-        if let Some(value) = self.value.as_ref() {
+        // Special Case: If -X import is used, than internally import_path is likely set
+        if let Some(import_path) = self
+            .import_path
+            .as_ref()
+            .filter(|_| matches!(self.value_type, Types::Import))
+        {
+            write!(f, " -- '{}'", import_path.to_string_lossy())?;
+        } else if let Some(value) = self.value.as_ref() {
             write!(f, " -- {value}")?;
         }
+
         Ok(())
     }
 }
@@ -402,13 +438,57 @@ impl Display for TableArgs {
 pub trait KeyValueType {
     fn configure_args(&self, args: &mut TableArgs) {
         args.set_value(self.to_toml_item());
-        args.set_value_ty(Self::db_type());
+        args.set_value_ty(self.db_type());
     }
 
-    fn db_type() -> Types;
+    fn db_type(&self) -> Types;
 
     fn to_toml_item(&self) -> toml_edit::Item {
         toml_edit::Item::None
+    }
+}
+
+impl KeyValueType for PathBuf {
+    fn configure_args(&self, args: &mut TableArgs) {
+        args.set_value(self.to_toml_item());
+        args.set_value_ty(self.db_type());
+        args.import_path = Some(self.clone());
+    }
+
+    fn db_type(&self) -> Types {
+        Types::Import
+    }
+
+    fn to_toml_item(&self) -> toml_edit::Item {
+        match std::fs::read_to_string(self)
+            .and_then(|r| Ok(toml_edit::ImDocument::parse(r).unwrap()))
+        {
+            Ok(doc) => doc.as_item().clone(),
+            Err(_) => toml_edit::Item::None,
+        }
+    }
+}
+
+impl KeyValueType for toml_edit::Item {
+    fn to_toml_item(&self) -> toml_edit::Item {
+        self.clone()
+    }
+
+    fn db_type(&self) -> Types {
+        match self {
+            toml_edit::Item::None => Types::String,
+            toml_edit::Item::Value(v) => match v {
+                toml_edit::Value::String(_) => Types::String,
+                toml_edit::Value::Integer(_) => Types::Integer,
+                toml_edit::Value::Float(_) => Types::Float,
+                toml_edit::Value::Boolean(_) => Types::Bool,
+                toml_edit::Value::Datetime(_) => Types::String,
+                toml_edit::Value::Array(_) => Types::Append,
+                toml_edit::Value::InlineTable(_) => Types::Object,
+            },
+            toml_edit::Item::Table(_) => Types::Object,
+            toml_edit::Item::ArrayOfTables(_) => Types::Object,
+        }
     }
 }
 
@@ -417,7 +497,7 @@ impl KeyValueType for String {
         value(self)
     }
 
-    fn db_type() -> Types {
+    fn db_type(&self) -> Types {
         Types::String
     }
 }
@@ -427,7 +507,7 @@ impl<'a> KeyValueType for &'a str {
         value(*self)
     }
 
-    fn db_type() -> Types {
+    fn db_type(&self) -> Types {
         Types::String
     }
 }
@@ -437,7 +517,7 @@ impl KeyValueType for f64 {
         value(*self)
     }
 
-    fn db_type() -> Types {
+    fn db_type(&self) -> Types {
         Types::Float
     }
 }
@@ -447,7 +527,7 @@ impl KeyValueType for f32 {
         value(*self as f64)
     }
 
-    fn db_type() -> Types {
+    fn db_type(&self) -> Types {
         Types::Float
     }
 }
@@ -457,7 +537,7 @@ impl KeyValueType for usize {
         value(*self as i64)
     }
 
-    fn db_type() -> Types {
+    fn db_type(&self) -> Types {
         Types::Integer
     }
 }
@@ -467,7 +547,7 @@ impl KeyValueType for u64 {
         value(*self as i64)
     }
 
-    fn db_type() -> Types {
+    fn db_type(&self) -> Types {
         Types::Integer
     }
 }
@@ -477,15 +557,15 @@ impl<'a> KeyValueType for u32 {
         value(*self as i64)
     }
 
-    fn db_type() -> Types {
+    fn db_type(&self) -> Types {
         Types::Integer
     }
 }
 
 #[allow(unused_imports)]
 mod tests {
+    use crate::split_args;
     use std::str::FromStr;
-    use crate::split_cmd;
 
     use super::TableAction;
     use clap::Parser;
@@ -498,12 +578,10 @@ mod tests {
 
     #[test]
     fn test_cli_args() {
-        let args = split_cmd("test insert --table 'test' key -- \'value\'").unwrap();
+        let args = split_args("test insert --table 'test' key -- \'value\'").unwrap();
         let command = Test::parse_from(args);
 
-        assert!(
-            matches!(command.command, TableAction::Insert(..))
-        );
+        assert!(matches!(command.command, TableAction::Insert(..)));
         if let TableAction::Insert(args) = command.command {
             assert!(!args.remove);
             assert!(!args.modify);

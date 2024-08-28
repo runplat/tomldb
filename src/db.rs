@@ -60,7 +60,7 @@ pub struct Journal {
     doc: DocumentMut,
     /// Current args
     pending: Vec<TableArgs>,
-    /// Evaluated
+    /// Evaluated arguments
     evaluated: Vec<(TableAction, TableArgs)>,
 }
 
@@ -70,6 +70,9 @@ impl Journal {
         self.pending.iter()
     }
 
+    /// Journals a change to a specific table
+    /// 
+    /// Returns the table arguments being journaled
     pub fn table(&mut self, table: &str) -> &mut TableArgs {
         self.push_change({
             let mut args = TableArgs::default();
@@ -281,6 +284,8 @@ async fn test_empty_db() {
     {
         journal.table("test").set_kvp("value-2", 3.14f32);
         journal.table("test").set_kvp("value", "hello world");
+        journal.table("imports").set_kvp("cargo_manifest", PathBuf::from("Cargo.toml"));
+
         let to_remove = journal.table("test");
         to_remove.set_kvp("value", "hello world");
         to_remove.set_remove(true);

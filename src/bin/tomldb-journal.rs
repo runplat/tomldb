@@ -2,14 +2,17 @@ use clap::Parser;
 use tomldb::TableAction;
 
 fn main() {
-    let cli = Cli::parse_from(tomldb::split_cmd("tomldb-journal insert key -- 'value'").unwrap());
+    let cli = TomldbJournal::parse_from(tomldb::split_args("tomldb-journal insert key -- 'value'").unwrap());
 
     println!("{:#?}", cli.action);
 }
 
-// TODO: This should actually be the journal cli
+/// tomldb journal command line tool
+/// 
+/// Provides plumbing for journal actions
 #[derive(Parser)]
-struct Cli {
+struct TomldbJournal {
+    /// Table action that is being journaled
     #[clap(subcommand)]
     action: TableAction,
 }
